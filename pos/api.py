@@ -16,6 +16,7 @@ from frappe import _
 from frappe.utils import flt, get_datetime
 
 from pos.utils import (
+    effective_rates,
     get_settings,
     item_price,
     parse_items,
@@ -47,7 +48,7 @@ def get_app_context() -> dict:
     bag_price = 0.0
     if settings.bag_item and profile.selling_price_list:
         try:
-            bag_price = item_price(settings.bag_item, profile.selling_price_list)
+            bag_price = item_price(settings.bag_item, profile.selling_price_list, warehouse=profile.warehouse)
         except Exception:
             bag_price = 0.0
 
@@ -81,7 +82,10 @@ def _catalog_version_value(price_list: str, warehouse: str) -> dict:
         price_list,
     )[0]
     bn = frappe.db.sql("SELECT MAX(modified) m FROM `tabBin` WHERE warehouse=%s", warehouse)[0]
-    stamps = [s for s in (ip[0], bn[0]) if s]
+    # Catalogue rates now reflect Pricing Rules, so a rule edit (e.g. changing the category markup) must
+    # also bump the version even though no Item Price row changed — else clients wouldn't resync.
+    pr = frappe.db.sql("SELECT MAX(modified) m FROM `tabPricing Rule` WHERE selling=1")[0]
+    stamps = [s for s in (ip[0], bn[0], pr[0]) if s]
     max_modified = max(stamps) if stamps else None
     return {"max_modified": str(max_modified) if max_modified else None, "count": int(ip[1] or 0)}
 
@@ -109,6 +113,11 @@ def _catalog_rows(price_list: str, warehouse: str, item_codes: list[str] | None 
     if not codes:
         return []
 
+    # Effective per-item rate AFTER Pricing Rules (same engine the invoice uses) so the shopper's
+    # catalogue price equals what checkout charges. effective_rates overlays engine-on-raw and never
+    # throws, so a per-item fallback to the raw price_list_rate is still applied below for safety.
+    eff = effective_rates(codes, price_list, warehouse=warehouse)
+
     items = {
         i.name: i
         for i in frappe.get_all(
@@ -135,7 +144,7 @@ def _catalog_rows(price_list: str, warehouse: str, item_codes: list[str] | None 
             {
                 "item_code": p.item_code,
                 "item_name": it.item_name,
-                "rate": flt(p.price_list_rate),
+                "rate": flt(eff.get(p.item_code, p.price_list_rate)),
                 "image": it.image,
                 "uom": it.stock_uom,
                 "barcode": barcodes.get(p.item_code),
@@ -218,6 +227,17 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
     settings = get_settings()
     price_list = profile.selling_price_list
     lines = parse_items(items_json)
+    bags = frappe.utils.cint(bag_qty)
+    if bags > 0 and not settings.bag_item:
+        frappe.throw(_("Plastic bags were requested but no bag item is configured in Checkout Settings."))
+
+    # Price the lines (and the bag) through the SAME pricing engine the draft invoice uses, so the
+    # provisional session rates already reflect Pricing Rules / markups. The draft built below is still
+    # the authoritative total; these seed the session record so it never carries a pre-markup figure.
+    codes = [line["item_code"] for line in lines]
+    if bags > 0:
+        codes.append(settings.bag_item)
+    rates = effective_rates(codes, price_list, warehouse=profile.warehouse)
 
     doc = frappe.new_doc("Checkout Session")
     doc.pos_profile = profile.name
@@ -229,7 +249,9 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
     doc.status = "Pending"
 
     for line in lines:
-        rate = item_price(line["item_code"], price_list)
+        rate = rates.get(line["item_code"])
+        if not rate:
+            frappe.throw(_("No selling price for {0} on price list {1}.").format(line["item_code"], price_list))
         doc.append(
             "items",
             {
@@ -241,12 +263,12 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
             },
         )
 
-    bags = frappe.utils.cint(bag_qty)
     if bags > 0:
-        if not settings.bag_item:
-            frappe.throw(_("Plastic bags were requested but no bag item is configured in Checkout Settings."))
+        bag_rate = rates.get(settings.bag_item)
+        if not bag_rate:
+            frappe.throw(_("No selling price for the bag item {0} on price list {1}.").format(settings.bag_item, price_list))
         doc.bag_qty = bags
-        doc.bag_amount = bags * item_price(settings.bag_item, price_list)
+        doc.bag_amount = bags * bag_rate
 
     doc.insert()  # validate() recomputes provisional net/grand totals; permissions enforced (no ignore)
 
