@@ -2,7 +2,7 @@
 
 The pure-logic tests run on any site; the ERPNext-dependent flow (create_session -> webhook ->
 POS Invoice) is exercised on a configured site and self-skips otherwise. Run with
-``bench run-tests --app t3x_pos``.
+``bench run-tests --app pos``.
 """
 
 import json
@@ -14,7 +14,7 @@ try:  # Frappe v16+
 except ImportError:  # Frappe v14/v15
     from frappe.tests.utils import FrappeTestCase as _BaseTestCase
 
-from t3x_pos.utils import parse_items, resolve_pos_profile
+from pos.utils import parse_items, resolve_pos_profile
 
 
 class TestParseItems(_BaseTestCase):

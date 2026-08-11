@@ -1,6 +1,6 @@
 """Unit tests for the HitPay webhook signature verification + payload parsing.
 
-Pure functions — no site fixtures needed. Runs under ``bench run-tests --app t3x_pos``.
+Pure functions — no site fixtures needed. Runs under ``bench run-tests --app pos``.
 """
 
 import hashlib
@@ -12,7 +12,7 @@ try:  # Frappe v16+
 except ImportError:  # Frappe v14/v15
     from frappe.tests.utils import FrappeTestCase as _BaseTestCase
 
-from t3x_pos.payments import _parse_payload, _verify_signature
+from pos.payments import _parse_payload, _verify_signature
 
 SALT = "test_salt_123"
 

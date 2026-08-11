@@ -1,5 +1,5 @@
 include requirements.txt
 include README.md
-recursive-include t3x_pos *.json *.csv *.md *.txt *.html *.js *.css
-recursive-exclude t3x_pos *.pyc
+recursive-include pos *.json *.csv *.md *.txt *.html *.js *.css
+recursive-exclude pos *.pyc
 global-exclude __pycache__

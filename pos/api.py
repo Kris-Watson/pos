@@ -15,7 +15,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_datetime
 
-from t3x_pos.utils import (
+from pos.utils import (
     get_settings,
     item_price,
     parse_items,
@@ -258,7 +258,7 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
 def start_payment(session: str, method: str) -> dict:
     """Create the HitPay payment request for a session (server-side, key never on the device) and
     return what the screen should show: a QR payload, a hosted URL, or a terminal-wait flag."""
-    from t3x_pos import payments
+    from pos import payments
 
     return payments.create_payment_request(session, method)
 
@@ -284,13 +284,13 @@ def session_status(session: str) -> dict:
 # --------------------------------------------------------------------------------------------------
 @frappe.whitelist(methods=["POST"])
 def open_day(pos_profile: str | None = None) -> dict:
-    from t3x_pos import stock
+    from pos import stock
 
     return stock.open_day(pos_profile)
 
 
 @frappe.whitelist(methods=["POST"])
 def close_day(pos_profile: str | None = None) -> dict:
-    from t3x_pos import stock
+    from pos import stock
 
     return stock.close_day(pos_profile)
