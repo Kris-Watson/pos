@@ -26,12 +26,16 @@ WALK_IN_CUSTOMER = "Walk-in Customer"
 def after_install() -> None:
     """Provision the app's bootstrap objects.
 
-    Each step is isolated: a failure in one is logged and skipped rather than aborting the whole
-    ``install-app`` (which would otherwise roll the app back). Every step is idempotent, so once the
-    underlying cause is fixed this can be re-run safely with ``bench execute pos.install.after_install``.
+    The **cashier role is critical** — nothing in the app works without it, so its failure is left to
+    propagate and abort ``install-app`` (better a clean rollback than a silently useless install). The
+    remaining steps are isolated: a failure in one is logged and skipped rather than aborting. Every step
+    is idempotent, so once the cause is fixed this can be re-run with ``bench execute pos.install.after_install``.
     """
+    # Critical: let this raise. An abort here rolls the app back cleanly instead of installing it broken.
+    _ensure_cashier_role()
+    frappe.db.commit()
+
     steps = (
-        ("cashier role", _ensure_cashier_role),
         ("resource read grants", _grant_resource_read),
         ("HitPay mode of payment", _ensure_hitpay_mode_of_payment),
         ("walk-in customer", _ensure_walk_in_customer),
