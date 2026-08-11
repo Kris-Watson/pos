@@ -24,12 +24,36 @@ WALK_IN_CUSTOMER = "Walk-in Customer"
 
 
 def after_install() -> None:
-    _ensure_cashier_role()
-    _grant_resource_read()
-    _ensure_hitpay_mode_of_payment()
-    _ensure_walk_in_customer()
-    _seed_settings()
-    frappe.db.commit()
+    """Provision the app's bootstrap objects.
+
+    Each step is isolated: a failure in one is logged and skipped rather than aborting the whole
+    ``install-app`` (which would otherwise roll the app back). Every step is idempotent, so once the
+    underlying cause is fixed this can be re-run safely with ``bench execute pos.install.after_install``.
+    """
+    steps = (
+        ("cashier role", _ensure_cashier_role),
+        ("resource read grants", _grant_resource_read),
+        ("HitPay mode of payment", _ensure_hitpay_mode_of_payment),
+        ("walk-in customer", _ensure_walk_in_customer),
+        ("checkout settings", _seed_settings),
+    )
+    failed = []
+    for label, step in steps:
+        try:
+            step()
+        except Exception:
+            failed.append(label)
+            # Roll back the partial writes of this step so the next one starts clean.
+            frappe.db.rollback()
+            frappe.log_error(frappe.get_traceback(), f"Self Checkout install: {label} failed")
+        else:
+            frappe.db.commit()
+    if failed:
+        frappe.log_error(
+            "Steps skipped: " + ", ".join(failed) + ". Fix the cause and re-run "
+            "`bench execute pos.install.after_install`.",
+            "Self Checkout install incomplete",
+        )
 
 
 def _ensure_cashier_role() -> None:
@@ -69,19 +93,17 @@ def _ensure_walk_in_customer() -> None:
         return
     group = frappe.db.get_default("customer_group") or frappe.db.get_value("Customer Group", {"is_group": 0}, "name")
     territory = frappe.db.get_default("territory") or frappe.db.get_value("Territory", {"is_group": 0}, "name")
-    try:
-        frappe.get_doc(
-            {
-                "doctype": "Customer",
-                "customer_name": WALK_IN_CUSTOMER,
-                "customer_type": "Individual",
-                "customer_group": group,
-                "territory": territory,
-            }
-        ).insert(ignore_permissions=True)
-    except Exception:
-        # Non-fatal: an admin can create/point the default customer in Checkout Settings later.
-        frappe.log_error(frappe.get_traceback(), "Could not seed Walk-in Customer")
+    # Non-fatal if this raises: the after_install harness logs + skips it, and an admin can point the
+    # default customer in Checkout Settings later.
+    frappe.get_doc(
+        {
+            "doctype": "Customer",
+            "customer_name": WALK_IN_CUSTOMER,
+            "customer_type": "Individual",
+            "customer_group": group,
+            "territory": territory,
+        }
+    ).insert(ignore_permissions=True)
 
 
 def _seed_settings() -> None:

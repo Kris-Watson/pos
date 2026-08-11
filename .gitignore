@@ -1,3 +1,10 @@
+# Sample / seed data — kept locally, not uploaded
+sample_data/
+user-tests/
+tools/
+
+
+
 # Python
 __pycache__/
 *.py[cod]
