@@ -34,3 +34,19 @@ bench --site <site> migrate
 Then configure **Checkout Settings** (HitPay key + salt, environment, stock mode) and create a **POS
 Profile** per shop with its warehouse, price list, applicable cashier user, and the "HitPay" payment
 method.
+
+## Permission model
+
+Every API call runs as its real caller and is permission-checked natively — the only elevation is the
+caller-less HitPay webhook, which runs as a dedicated, login-less service account (`checkout.service@…`,
+created by `after_install`) holding just the roles a sale needs (Accounts User, Sales Manager, Stock User).
+
+Two operational requirements follow:
+
+1. **Cashier users need `Shop Cashier` + `Accounts User`.** The till builds the *draft* POS Invoice under
+   the cashier's own permissions (no bypass); Accounts User grants the POS Invoice create + accounting
+   reads that requires. Assign both roles to each cashier user (alongside the POS Profile mapping).
+2. **A manager must run `open_day` at shop start.** Opening the POS session creates a POS Opening Entry,
+   which needs `Sales Manager` — deliberately *not* a cashier right. Until the day is open, `create_session`
+   refuses with a clear "ask a manager to open the day" error (before any payment is taken). `close_day`
+   likewise runs as a manager (`Sales Manager` + `Stock User` for the end-of-day stock arm).

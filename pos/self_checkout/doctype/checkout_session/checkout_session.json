@@ -206,6 +206,11 @@
    "read": 1,
    "write": 1,
    "create": 1
+  },
+  {
+   "role": "Checkout Service",
+   "read": 1,
+   "write": 1
   }
  ],
  "sort_field": "modified",

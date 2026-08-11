@@ -13,7 +13,13 @@ clearing account). The **stock arm** is chosen by Checkout Settings ``stock_mode
   per day). ``close_day`` also creates the native POS Closing Entry that consolidates the session.
 
 The two arms are directly comparable (N stock batches vs 1) — that comparison is the whole point of the
-toggle. All work here runs in a trusted context (webhook-triggered system job / whitelisted day ops).
+toggle.
+
+Permission model (native, no silent bypass): the cashier builds the **draft** invoice as themselves
+(``build_draft_invoice`` — needs Shop Cashier + Accounts User). The **submit** happens on the caller-less
+webhook as the service account (``finalize_paid_session``). ``open_day``/``close_day`` run as the manager
+who invokes them (Sales Manager, + Stock User for the EOD stock arm). The only retained ``ignore_permissions``
+is the internal delete of an unpaid draft (Accounts User can't delete a POS Invoice).
 
 NOTE (verify on the v16 bench): POS Invoice submission may require an open POS Opening Entry, and the
 exact POS Closing Entry helper name. Both are handled defensively below and flagged for confirmation.
@@ -37,13 +43,24 @@ def build_draft_invoice(session) -> object:
     only (no rate) so ``get_item_details`` derives the effective rate. Returns the inserted draft doc.
 
     Nothing hits the GL or stock ledger yet — that happens only when ``finalize_paid_session`` submits it.
+
+    Runs as the **caller** (the cashier) with native permission checks — no elevation, no
+    ``ignore_permissions``. The cashier therefore needs **Shop Cashier + Accounts User** (Accounts User
+    grants create on POS Invoice + the accounting reads ERPNext's pricing validates against the live user).
+    A manager must have opened the POS day first (``open_day``); the cashier can't open it (that needs
+    Sales Manager), so if the day isn't open we fail cleanly **before** any payment is taken.
     """
     settings = get_settings()
     profile = frappe.get_doc("POS Profile", session.pos_profile)
     company = settings.company or profile.company
     realtime_stock = (session.stock_mode or settings.stock_mode) == "Realtime"
 
-    _ensure_open_pos_entry(profile, session.terminal_user or frappe.session.user, company)
+    # Precondition: a manager has opened the POS day for this shop. Checked by pos_profile (user-agnostic)
+    # via db.get_value, which bypasses perms — so the till needs no POS Opening Entry read grant.
+    if not frappe.db.get_value(
+        "POS Opening Entry", {"pos_profile": profile.name, "status": "Open", "docstatus": 1}, "name"
+    ):
+        frappe.throw(_("The POS day isn't open for this shop yet — ask a manager to open the day."))
 
     inv = frappe.new_doc("POS Invoice")
     inv.customer = session.customer or settings.default_customer
@@ -70,8 +87,7 @@ def build_draft_invoice(session) -> object:
     total = flt(inv.rounded_total) or flt(inv.grand_total)
     inv.append("payments", {"mode_of_payment": settings.hitpay_mode_of_payment, "amount": total})
 
-    inv.flags.ignore_permissions = True
-    inv.insert(ignore_permissions=True)  # docstatus 0 — draft, no GL/stock yet
+    inv.insert()  # native perms (cashier: Shop Cashier + Accounts User); docstatus 0 — no GL/stock yet
     return inv
 
 
@@ -81,6 +97,9 @@ def finalize_paid_session(session_name: str, charged_amount: float | None = None
     Reconciles the invoice total against what HitPay actually charged (gross, fees excluded): if they
     differ by more than a cent we **still submit** (the money was taken — the sale must be recorded) but
     log the mismatch for review. Returns the submitted POS Invoice name.
+
+    Runs on the caller-less webhook path as the **service account** (see payments.process_payment_event),
+    whose roles cover submitting the invoice and stock natively — no ``ignore_permissions``.
     """
     session = frappe.get_doc("Checkout Session", session_name)
     if session.status != "Paid":
@@ -98,7 +117,13 @@ def finalize_paid_session(session_name: str, charged_amount: float | None = None
         return None  # cancelled
 
     settings = get_settings()
+    profile = frappe.get_doc("POS Profile", session.pos_profile)
+    company = settings.company or profile.company
     realtime_stock = (session.stock_mode or settings.stock_mode) == "Realtime"
+
+    # Safety net: the money is already taken, so make sure a POS session is open even if a manager's
+    # open_day was missed (the service account holds Sales Manager). Keyed to the session's operator.
+    _ensure_open_pos_entry(profile, session.terminal_user or frappe.session.user, company)
 
     # Re-sync the payment to the invoice's current total so submit is never rejected as a partial payment.
     inv.run_method("calculate_taxes_and_totals")
@@ -116,8 +141,7 @@ def finalize_paid_session(session_name: str, charged_amount: float | None = None
             "Self Checkout amount mismatch",
         )
 
-    inv.flags.ignore_permissions = True
-    inv.save(ignore_permissions=True)
+    inv.save()
     inv.submit()
 
     session.db_set("stock_posted", 1 if realtime_stock else 0, update_modified=False)
@@ -133,6 +157,8 @@ def discard_draft_invoice(session_name: str) -> None:
         return
     inv = frappe.get_doc("POS Invoice", session.pos_invoice)
     if inv.docstatus == 0:
+        # Accounts User (the service account's invoice role) can create/submit but not delete a POS Invoice;
+        # this is an internal cleanup of an unpaid draft, so bypass perms for just this delete.
         frappe.delete_doc("POS Invoice", inv.name, ignore_permissions=True, force=True)
         session.db_set("pos_invoice", None, update_modified=False)
         frappe.db.commit()
@@ -157,8 +183,7 @@ def _ensure_open_pos_entry(profile, user: str, company: str) -> str:
     entry.posting_date = today()
     for pay in profile.payments:
         entry.append("balance_details", {"mode_of_payment": pay.mode_of_payment, "opening_amount": 0})
-    entry.flags.ignore_permissions = True
-    entry.insert(ignore_permissions=True)
+    entry.insert()  # native: callers hold Sales Manager (open_day = a manager; finalize = the service account)
     entry.submit()
     return entry.name
 
@@ -231,8 +256,7 @@ def _post_consolidated_stock(profile) -> tuple[str | None, int]:
     se.set_posting_time = 1
     for item_code, qty in qty_by_item.items():
         se.append("items", {"item_code": item_code, "qty": qty, "s_warehouse": profile.warehouse})
-    se.flags.ignore_permissions = True
-    se.insert(ignore_permissions=True)
+    se.insert()  # native: close_day runs as a manager holding Stock User
     se.submit()
 
     for name in sessions:
@@ -258,8 +282,7 @@ def _make_closing_entry(profile) -> str | None:
 
         closing = make_closing_entry_from_opening(frappe.get_doc("POS Opening Entry", opening))
         closing.period_end_date = now_datetime()
-        closing.flags.ignore_permissions = True
-        closing.insert(ignore_permissions=True)
+        closing.insert()  # native: close_day runs as a manager holding Sales Manager
         closing.submit()
         return closing.name
     except Exception:

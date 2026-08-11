@@ -25,6 +25,10 @@ _BACKOFF = 0.05  # seconds, multiplied by the attempt number
 SETTINGS_DOCTYPE = "Checkout Settings"
 SESSION_DOCTYPE = "Checkout Session"
 
+# Backend identity for the caller-less webhook path (no logged-in user to check permissions against).
+# Holds only the roles needed to submit the sale — never used on a user-facing endpoint. See install.py.
+SERVICE_USER = "checkout.service@selfcheckout.local"
+
 
 class CheckoutConflict(frappe.ValidationError):
     """A concurrent write already changed the session; the caller should re-read and retry."""

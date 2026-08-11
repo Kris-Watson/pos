@@ -19,7 +19,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_url, now_datetime
 
-from pos.utils import cas_session_status, get_settings
+from pos.utils import SERVICE_USER, cas_session_status, get_settings
 
 # QR-rendered methods (device shows the QR); everything else is a hosted redirect, except the
 # card-present reader which just waits for a tap on the terminal.
@@ -129,7 +129,7 @@ def _extract_error(text: str) -> str | None:
 @frappe.whitelist(allow_guest=True)
 def hitpay_webhook():
     """HitPay posts the payment result here. Verify the HMAC, then enqueue the processing and return
-    200 immediately. Idempotency + all writes happen in the background job (as Administrator)."""
+    200 immediately. Idempotency + all writes happen in the background job (as the service account)."""
     raw = frappe.request.get_data(as_text=True) if frappe.request else ""
     form = dict(frappe.local.form_dict or {})
     form.pop("cmd", None)
@@ -204,10 +204,20 @@ def _safe_header(name: str) -> str | None:
 
 
 def process_payment_event(payload: dict) -> None:
-    """Idempotently apply one payment result: record the event, flip the session, and on success turn
-    it into a native POS Invoice + push the result to the cashier. Runs as a trusted system job."""
-    frappe.set_user("Administrator")
+    """Idempotently apply one payment result: record the event, flip the session, and on success turn it
+    into a native POS Invoice + push the result to the cashier.
 
+    The webhook has no logged-in caller, so this runs as the least-privilege **service account** (holds
+    exactly the roles a sale needs, nothing more) and restores the prior user when done."""
+    prior_user = frappe.session.user
+    frappe.set_user(SERVICE_USER)
+    try:
+        _apply_payment_event(payload)
+    finally:
+        frappe.set_user(prior_user)
+
+
+def _apply_payment_event(payload: dict) -> None:
     status = (payload.get("status") or "").lower()
     reference = payload.get("reference_number")
     event_key = payload.get("payment_id") or f"{payload.get('request_id')}:{status}"
@@ -227,7 +237,7 @@ def process_payment_event(payload: dict) -> None:
                 "processed_on": now_datetime(),
                 "payload": frappe.as_json(payload.get("raw") or {}),
             }
-        ).insert(ignore_permissions=True)
+        ).insert()  # service account holds create on Checkout Payment Event (Checkout Service role)
     except frappe.DuplicateEntryError:
         frappe.db.rollback()
         return

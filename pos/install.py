@@ -16,23 +16,38 @@ from __future__ import annotations
 
 import frappe
 
+from pos.utils import SERVICE_USER
+
 CASHIER_ROLE = "Shop Cashier"
 # The till reads these to populate its catalogue; the role is otherwise scoped to Checkout DocTypes.
 RESOURCE_DOCTYPES = ("Item", "Item Price", "Item Barcode", "Bin", "Warehouse", "Customer")
 HITPAY_MODE_OF_PAYMENT = "HitPay"
 WALK_IN_CUSTOMER = "Walk-in Customer"
 
+# Backend identity for the caller-less webhook (see payments.process_payment_event). Its own role carries
+# write on Checkout Session + create on Checkout Payment Event (in the doctype JSONs); the ERPNext roles
+# below give it exactly what a sale needs — Accounts User (submit POS Invoice), Sales Manager (POS
+# Opening/Closing Entry), Stock User (Stock Entry) — and nothing more (well below System Manager).
+SERVICE_ROLE = "Checkout Service"
+SERVICE_ERPNEXT_ROLES = ("Accounts User", "Sales Manager", "Stock User")
+
 
 def after_install() -> None:
     """Provision the app's bootstrap objects.
 
-    The **cashier role is critical** — nothing in the app works without it, so its failure is left to
-    propagate and abort ``install-app`` (better a clean rollback than a silently useless install). The
-    remaining steps are isolated: a failure in one is logged and skipped rather than aborting. Every step
-    is idempotent, so once the cause is fixed this can be re-run with ``bench execute pos.install.after_install``.
+    The **cashier role and the service account are critical** — nothing in the app works without them, so
+    their failure is left to propagate and abort ``install-app`` (better a clean rollback than a silently
+    useless install). The remaining steps are isolated: a failure in one is logged and skipped rather than
+    aborting. Every step is idempotent, so once the cause is fixed this can be re-run with
+    ``bench execute pos.install.after_install``.
+
+    Note (native permission model): cashier users must additionally be granted the **Accounts User** role
+    (to build the draft POS Invoice under their own permissions), and a **manager** must run ``open_day``
+    at shop start to open the POS session. See README.
     """
-    # Critical: let this raise. An abort here rolls the app back cleanly instead of installing it broken.
+    # Critical: let these raise. An abort here rolls the app back cleanly instead of installing it broken.
     _ensure_cashier_role()
+    _ensure_service_account()
     frappe.db.commit()
 
     steps = (
@@ -65,6 +80,38 @@ def _ensure_cashier_role() -> None:
         frappe.get_doc({"doctype": "Role", "role_name": CASHIER_ROLE, "desk_access": 0}).insert(
             ignore_permissions=True
         )
+
+
+def _ensure_service_account() -> None:
+    """Create the webhook backend identity: a **login-less System User** holding only the roles a sale
+    needs. Used solely via ``frappe.set_user`` in the caller-less webhook path — never on a user endpoint."""
+    if not frappe.db.exists("Role", SERVICE_ROLE):
+        frappe.get_doc({"doctype": "Role", "role_name": SERVICE_ROLE, "desk_access": 0}).insert(
+            ignore_permissions=True
+        )
+
+    if not frappe.db.exists("User", SERVICE_USER):
+        user = frappe.get_doc(
+            {
+                "doctype": "User",
+                "email": SERVICE_USER,
+                "first_name": "Checkout Service",
+                "user_type": "System User",
+                # Random password + no API key => the account cannot be logged into interactively.
+                "new_password": frappe.generate_hash(length=40),
+                "send_welcome_email": 0,
+            }
+        )
+        user.flags.no_welcome_mail = True
+        user.insert(ignore_permissions=True)
+
+    # Assign the minimal role set (idempotent). The ERPNext roles exist because erpnext is a required_app.
+    user = frappe.get_doc("User", SERVICE_USER)
+    have = {r.role for r in user.roles}
+    for role in (SERVICE_ROLE, *SERVICE_ERPNEXT_ROLES):
+        if role not in have and frappe.db.exists("Role", role):
+            user.append("roles", {"role": role})
+    user.save(ignore_permissions=True)
 
 
 def _grant_resource_read() -> None:
