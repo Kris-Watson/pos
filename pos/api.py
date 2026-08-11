@@ -276,6 +276,15 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
     # the session's provisional total with the draft's so HitPay is charged exactly what will be booked.
     draft = stock.build_draft_invoice(doc)
     charge = flt(draft.rounded_total) or flt(draft.grand_total)
+    # Refuse a zero/negative checkout total BEFORE payment. A 0 here means the draft invoice priced to
+    # nothing — an item get_item_details couldn't resolve on the shop's price list (UOM/currency/price
+    # list miss), or a 100%-off rule. Fail loudly at checkout instead of storing a 0 session that would
+    # ask HitPay to charge 0.00. (Everything above is uncommitted, so the throw rolls back cleanly.)
+    if charge <= 0:
+        frappe.throw(
+            _("This checkout totals {0} — there is nothing to charge. Check that every item is priced on "
+              "the shop's price list ({1}).").format(charge, price_list)
+        )
     frappe.db.set_value(
         "Checkout Session", doc.name, {"pos_invoice": draft.name, "grand_total": charge}, update_modified=False
     )

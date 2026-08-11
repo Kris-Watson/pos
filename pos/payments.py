@@ -47,13 +47,20 @@ def create_payment_request(session_name: str, method: str) -> dict:
     if doc.status != "Pending":
         frappe.throw(_("This checkout is no longer pending (status: {0}).").format(doc.status))
 
+    # Defense in depth: never ask HitPay to charge zero/negative. create_session already refuses a 0
+    # total, so reaching here with one means the session was tampered with or a pricing edit zeroed it —
+    # fail instead of creating a junk 0.00 charge that can never be paid.
+    amount = flt(doc.grand_total, 2)
+    if amount <= 0:
+        frappe.throw(_("This checkout has no payable amount (total is {0}).").format(amount))
+
     settings = get_settings()
     api_key = settings.get_password("hitpay_api_key", raise_exception=False)
     if not api_key:
         frappe.throw(_("HitPay is not configured (missing Business API key in Checkout Settings)."))
 
     body = {
-        "amount": f"{flt(doc.grand_total, 2):.2f}",
+        "amount": f"{amount:.2f}",
         "currency": (doc.currency or "SGD"),
         "payment_methods": [method],
         "reference_number": doc.name,
