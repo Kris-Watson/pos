@@ -1,0 +1,144 @@
+{
+ "actions": [],
+ "creation": "2026-08-11 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "issingle": 1,
+ "field_order": [
+  "hitpay_section",
+  "hitpay_env",
+  "hitpay_api_key",
+  "hitpay_salt",
+  "column_break_hitpay",
+  "hitpay_mode_of_payment",
+  "hitpay_clearing_account",
+  "sales_section",
+  "company",
+  "default_customer",
+  "bag_item",
+  "column_break_sales",
+  "default_currency",
+  "stock_section",
+  "stock_mode",
+  "stock_help"
+ ],
+ "fields": [
+  {
+   "fieldname": "hitpay_section",
+   "fieldtype": "Section Break",
+   "label": "HitPay"
+  },
+  {
+   "fieldname": "hitpay_env",
+   "fieldtype": "Select",
+   "label": "Environment",
+   "options": "sandbox\nprod",
+   "default": "sandbox",
+   "reqd": 1,
+   "description": "Which HitPay environment the server calls. Sandbox uses api.sandbox.hit-pay.com."
+  },
+  {
+   "fieldname": "hitpay_api_key",
+   "fieldtype": "Password",
+   "label": "Business API Key",
+   "description": "HitPay Business API key. Stored encrypted; never sent to the device."
+  },
+  {
+   "fieldname": "hitpay_salt",
+   "fieldtype": "Password",
+   "label": "Webhook Salt",
+   "description": "Salt used to verify the HMAC signature on inbound HitPay webhooks."
+  },
+  {
+   "fieldname": "column_break_hitpay",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "hitpay_mode_of_payment",
+   "fieldtype": "Link",
+   "label": "HitPay Mode of Payment",
+   "options": "Mode of Payment",
+   "description": "Mode of Payment recorded on the POS Invoice for HitPay-settled sales."
+  },
+  {
+   "fieldname": "hitpay_clearing_account",
+   "fieldtype": "Link",
+   "label": "HitPay Clearing Account",
+   "options": "Account",
+   "description": "Optional. Clearing account the HitPay payment is booked to (defaults to the Mode of Payment's account for the company)."
+  },
+  {
+   "fieldname": "sales_section",
+   "fieldtype": "Section Break",
+   "label": "Sales"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "default_customer",
+   "fieldtype": "Link",
+   "label": "Default Customer",
+   "options": "Customer",
+   "description": "Walk-in customer used on POS Invoices when the sale has no named customer."
+  },
+  {
+   "fieldname": "bag_item",
+   "fieldtype": "Link",
+   "label": "Plastic Bag Item",
+   "options": "Item",
+   "description": "Item charged per plastic bag (e.g. $0.10). Added as a line when bag_qty > 0."
+  },
+  {
+   "fieldname": "column_break_sales",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "default_currency",
+   "fieldtype": "Link",
+   "label": "Default Currency",
+   "options": "Currency",
+   "default": "SGD"
+  },
+  {
+   "fieldname": "stock_section",
+   "fieldtype": "Section Break",
+   "label": "Stock"
+  },
+  {
+   "fieldname": "stock_mode",
+   "fieldtype": "Select",
+   "label": "Stock Update Mode",
+   "options": "Realtime\nEnd of Day",
+   "default": "Realtime",
+   "reqd": 1,
+   "description": "Realtime: each POS Invoice moves stock at sale time. End of Day: invoices skip stock; one consolidated movement is posted at day close."
+  },
+  {
+   "fieldname": "stock_help",
+   "fieldtype": "HTML",
+   "options": "<p>This toggle is the experiment: <b>Realtime</b> writes one stock-ledger batch per sale; <b>End of Day</b> writes one per day at close. Compare the resulting API-call / resource cost via POS Closing Entry + Checkout Session records.</p>"
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-11 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Self Checkout",
+ "name": "Checkout Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

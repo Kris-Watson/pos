@@ -1,0 +1,2 @@
+# Runtime deps come from the bench environment (frappe + erpnext).
+# HitPay is called over plain HTTP via frappe's bundled `requests`; nothing extra needed.

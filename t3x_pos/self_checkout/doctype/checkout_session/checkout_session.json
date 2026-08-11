@@ -1,0 +1,214 @@
+{
+ "actions": [],
+ "autoname": "CHK-.YYYY.-.#####",
+ "creation": "2026-08-11 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "field_order": [
+  "pos_profile",
+  "warehouse",
+  "terminal_user",
+  "customer",
+  "column_break_head",
+  "status",
+  "payment_method",
+  "stock_mode",
+  "stock_posted",
+  "hitpay_section",
+  "hitpay_request_id",
+  "hitpay_payment_id",
+  "column_break_hitpay",
+  "paid_on",
+  "pos_invoice",
+  "amounts_section",
+  "currency",
+  "net_total",
+  "column_break_amounts",
+  "bag_qty",
+  "bag_amount",
+  "grand_total",
+  "items_section",
+  "items"
+ ],
+ "fields": [
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "label": "POS Profile",
+   "options": "POS Profile",
+   "reqd": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "terminal_user",
+   "fieldtype": "Link",
+   "label": "Terminal User",
+   "options": "User",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nPaid\nFailed\nExpired\nCanceled",
+   "default": "Pending",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "payment_method",
+   "fieldtype": "Data",
+   "label": "Payment Method",
+   "description": "HitPay method chosen for this attempt (e.g. paynow_online, wifi_card_reader)."
+  },
+  {
+   "fieldname": "stock_mode",
+   "fieldtype": "Data",
+   "label": "Stock Mode",
+   "read_only": 1,
+   "description": "Copied from Checkout Settings at create time so each sale records which arm it used."
+  },
+  {
+   "fieldname": "stock_posted",
+   "fieldtype": "Check",
+   "label": "Stock Posted",
+   "read_only": 1,
+   "default": "0"
+  },
+  {
+   "fieldname": "hitpay_section",
+   "fieldtype": "Section Break",
+   "label": "HitPay"
+  },
+  {
+   "fieldname": "hitpay_request_id",
+   "fieldtype": "Data",
+   "label": "HitPay Request ID",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "hitpay_payment_id",
+   "fieldtype": "Data",
+   "label": "HitPay Payment ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_hitpay",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "paid_on",
+   "fieldtype": "Datetime",
+   "label": "Paid On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pos_invoice",
+   "fieldtype": "Link",
+   "label": "POS Invoice",
+   "options": "POS Invoice",
+   "read_only": 1,
+   "description": "The native ERPNext sale created on payment success. Empty for abandoned/failed carts."
+  },
+  {
+   "fieldname": "amounts_section",
+   "fieldtype": "Section Break",
+   "label": "Amounts"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "default": "SGD"
+  },
+  {
+   "fieldname": "net_total",
+   "fieldtype": "Currency",
+   "label": "Net Total",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_amounts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bag_qty",
+   "fieldtype": "Int",
+   "label": "Bag Qty",
+   "default": "0"
+  },
+  {
+   "fieldname": "bag_amount",
+   "fieldtype": "Currency",
+   "label": "Bag Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "grand_total",
+   "fieldtype": "Currency",
+   "label": "Grand Total",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "items_section",
+   "fieldtype": "Section Break",
+   "label": "Items"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "Checkout Session Item"
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-11 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Self Checkout",
+ "name": "Checkout Session",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "Shop Cashier",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
