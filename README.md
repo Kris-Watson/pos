@@ -26,7 +26,7 @@ invoices or GL. "Show accounting later" is just unhiding ERPNext reports; there 
 ## Install
 
 ```
-bench get-app ./pos            # or: bench get-app <repo-url>
+bench get-app /path/to/pos-app   # this repo's root (the folder containing setup.py), or a git URL
 bench --site <site> install-app pos
 bench --site <site> migrate
 ```
