@@ -19,14 +19,14 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_url, now_datetime
 
-from t3x_pos.utils import cas_session_status, get_settings
+from pos.utils import cas_session_status, get_settings
 
 # QR-rendered methods (device shows the QR); everything else is a hosted redirect, except the
 # card-present reader which just waits for a tap on the terminal.
 QR_METHODS = {"paynow_online", "grabpay_direct", "shopee_pay", "wechat", "alipay"}
 TERMINAL_METHOD = "wifi_card_reader"
 
-WEBHOOK_PATH = "/api/method/t3x_pos.payments.hitpay_webhook"
+WEBHOOK_PATH = "/api/method/pos.payments.hitpay_webhook"
 
 
 def _base_url(env: str) -> str:
@@ -143,7 +143,7 @@ def hitpay_webhook():
 
     payload = _parse_payload(raw, form)
     frappe.enqueue(
-        "t3x_pos.payments.process_payment_event",
+        "pos.payments.process_payment_event",
         queue="short",
         enqueue_after_commit=True,
         payload=payload,
@@ -252,12 +252,12 @@ def process_payment_event(payload: dict) -> None:
     frappe.db.commit()
 
     if flipped and new_status == "Paid":
-        from t3x_pos import stock
+        from pos import stock
 
         stock.convert_session_to_invoice(session)
 
     # Push the result to the originating cashier (fire-and-forget; app also polls session_status).
-    from t3x_pos import realtime
+    from pos import realtime
 
     realtime.publish_session_result(session)
 

@@ -25,7 +25,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, now_datetime, today
 
-from t3x_pos.utils import get_settings, resolve_pos_profile
+from pos.utils import get_settings, resolve_pos_profile
 
 
 def convert_session_to_invoice(session_name: str) -> str | None:

@@ -10,11 +10,11 @@ with open("requirements.txt") as f:
         if line.strip() and not line.strip().startswith("#")
     ]
 
-# get version from __version__ variable in t3x_pos/__init__.py
-from t3x_pos import __version__ as version
+# get version from __version__ variable in pos/__init__.py
+from pos import __version__ as version
 
 setup(
-    name="t3x_pos",
+    name="pos",
     version=version,
     description="Self-checkout point of sale (HitPay payments) on ERPNext",
     author="Self Checkout",
