@@ -41,12 +41,20 @@ Every API call runs as its real caller and is permission-checked natively — th
 caller-less HitPay webhook, which runs as a dedicated, login-less service account (`checkout.service@…`,
 created by `after_install`) holding just the roles a sale needs (Accounts User, Sales Manager, Stock User).
 
-Two operational requirements follow:
+The **`Shop Cashier` role is self-contained**: `after_install` grants it, under the cashier's own
+identity, every permission the till needs — read on the catalogue + pricing masters (Item, Item Price,
+Account, Cost Center, Pricing Rule, tax templates, POS Profile, …) and create/submit on the POS
+transaction docs it writes (draft POS Invoice — *create only*, the webhook submits; POS Opening Entry;
+POS Closing Entry; Stock Entry). So **assigning a user the single `Shop Cashier` role (plus the POS
+Profile mapping) is all that's needed** — no `Accounts User`, no `Sales Manager`, no separate manager.
+The cashier opens the day (`open_day`), sells, and closes it (`close_day`) themselves. Until the day is
+open, `create_session` refuses cleanly ("open the day before checking out") before any payment is taken.
 
-1. **Cashier users need `Shop Cashier` + `Accounts User`.** The till builds the *draft* POS Invoice under
-   the cashier's own permissions (no bypass); Accounts User grants the POS Invoice create + accounting
-   reads that requires. Assign both roles to each cashier user (alongside the POS Profile mapping).
-2. **A manager must run `open_day` at shop start.** Opening the POS session creates a POS Opening Entry,
-   which needs `Sales Manager` — deliberately *not* a cashier right. Until the day is open, `create_session`
-   refuses with a clear "ask a manager to open the day" error (before any payment is taken). `close_day`
-   likewise runs as a manager (`Sales Manager` + `Stock User` for the end-of-day stock arm).
+> **Note on how the grants work.** Frappe's only mechanism for adding a role to an existing doctype's
+> permissions is `Custom DocPerm`, and once any Custom DocPerm exists for a doctype its permissions become
+> Custom-DocPerm-managed *site-wide* (later ERPNext upgrades to that doctype's standard perms won't
+> auto-apply). `after_install` uses Frappe's additive API (`add_permission`), which copies the standard
+> perms in first so no existing role loses access — but the doctypes it touches (POS Invoice/Opening/
+> Closing Entry, Stock Entry, Account, Cost Center, Pricing Rule, tax templates, …) are thereafter
+> custom-managed. That's an acceptable trade for a single-purpose POS site; on a shared ERP you'd instead
+> assign the bundled ERPNext roles.

@@ -15,11 +15,12 @@ clearing account). The **stock arm** is chosen by Checkout Settings ``stock_mode
 The two arms are directly comparable (N stock batches vs 1) — that comparison is the whole point of the
 toggle.
 
-Permission model (native, no silent bypass): the cashier builds the **draft** invoice as themselves
-(``build_draft_invoice`` — needs Shop Cashier + Accounts User). The **submit** happens on the caller-less
-webhook as the service account (``finalize_paid_session``). ``open_day``/``close_day`` run as the manager
-who invokes them (Sales Manager, + Stock User for the EOD stock arm). The only retained ``ignore_permissions``
-is the internal delete of an unpaid draft (Accounts User can't delete a POS Invoice).
+Permission model (native, no silent bypass): the cashier does all of this under its own identity — the
+self-contained **Shop Cashier** role carries the perms for each step. The cashier builds the **draft**
+invoice (``build_draft_invoice``) and opens/closes the POS day (``open_day``/``close_day``, incl. the EOD
+stock arm). The only elevation is the **submit** on the caller-less webhook, which runs as the service
+account (``finalize_paid_session``). The only retained ``ignore_permissions`` is the internal delete of an
+unpaid draft (the cashier role has create but not delete on POS Invoice).
 
 NOTE (verify on the v16 bench): POS Invoice submission may require an open POS Opening Entry, and the
 exact POS Closing Entry helper name. Both are handled defensively below and flagged for confirmation.
@@ -45,22 +46,21 @@ def build_draft_invoice(session) -> object:
     Nothing hits the GL or stock ledger yet — that happens only when ``finalize_paid_session`` submits it.
 
     Runs as the **caller** (the cashier) with native permission checks — no elevation, no
-    ``ignore_permissions``. The cashier therefore needs **Shop Cashier + Accounts User** (Accounts User
-    grants create on POS Invoice + the accounting reads ERPNext's pricing validates against the live user).
-    A manager must have opened the POS day first (``open_day``); the cashier can't open it (that needs
-    Sales Manager), so if the day isn't open we fail cleanly **before** any payment is taken.
+    ``ignore_permissions``. The self-contained **Shop Cashier** role grants create on POS Invoice plus the
+    accounting reads ERPNext's pricing validates against the live user. The POS day must be open first
+    (``open_day``, which the cashier can also call), so if it isn't we fail cleanly **before** any payment.
     """
     settings = get_settings()
     profile = frappe.get_doc("POS Profile", session.pos_profile)
     company = settings.company or profile.company
     realtime_stock = (session.stock_mode or settings.stock_mode) == "Realtime"
 
-    # Precondition: a manager has opened the POS day for this shop. Checked by pos_profile (user-agnostic)
-    # via db.get_value, which bypasses perms — so the till needs no POS Opening Entry read grant.
+    # Precondition: the POS day is open for this shop. Checked by pos_profile (user-agnostic) rather than
+    # by the current cashier, so any operator can sell into a day another opened.
     if not frappe.db.get_value(
         "POS Opening Entry", {"pos_profile": profile.name, "status": "Open", "docstatus": 1}, "name"
     ):
-        frappe.throw(_("The POS day isn't open for this shop yet — ask a manager to open the day."))
+        frappe.throw(_("The POS day isn't open for this shop yet — open the day before checking out."))
 
     inv = frappe.new_doc("POS Invoice")
     inv.customer = session.customer or settings.default_customer
@@ -121,8 +121,8 @@ def finalize_paid_session(session_name: str, charged_amount: float | None = None
     company = settings.company or profile.company
     realtime_stock = (session.stock_mode or settings.stock_mode) == "Realtime"
 
-    # Safety net: the money is already taken, so make sure a POS session is open even if a manager's
-    # open_day was missed (the service account holds Sales Manager). Keyed to the session's operator.
+    # Safety net: the money is already taken, so make sure a POS session is open even if open_day was
+    # missed (the service account holds Sales Manager for this). Keyed to the session's operator.
     _ensure_open_pos_entry(profile, session.terminal_user or frappe.session.user, company)
 
     # Re-sync the payment to the invoice's current total so submit is never rejected as a partial payment.
@@ -183,7 +183,7 @@ def _ensure_open_pos_entry(profile, user: str, company: str) -> str:
     entry.posting_date = today()
     for pay in profile.payments:
         entry.append("balance_details", {"mode_of_payment": pay.mode_of_payment, "opening_amount": 0})
-    entry.insert()  # native: callers hold Sales Manager (open_day = a manager; finalize = the service account)
+    entry.insert()  # native: open_day = the cashier (Shop Cashier); finalize safety-net = the service account
     entry.submit()
     return entry.name
 
@@ -256,7 +256,7 @@ def _post_consolidated_stock(profile) -> tuple[str | None, int]:
     se.set_posting_time = 1
     for item_code, qty in qty_by_item.items():
         se.append("items", {"item_code": item_code, "qty": qty, "s_warehouse": profile.warehouse})
-    se.insert()  # native: close_day runs as a manager holding Stock User
+    se.insert()  # native: close_day runs as the cashier (Shop Cashier holds Stock Entry create+submit)
     se.submit()
 
     for name in sessions:
@@ -282,7 +282,7 @@ def _make_closing_entry(profile) -> str | None:
 
         closing = make_closing_entry_from_opening(frappe.get_doc("POS Opening Entry", opening))
         closing.period_end_date = now_datetime()
-        closing.insert()  # native: close_day runs as a manager holding Sales Manager
+        closing.insert()  # native: close_day runs as the cashier (Shop Cashier holds POS Closing Entry perms)
         closing.submit()
         return closing.name
     except Exception:

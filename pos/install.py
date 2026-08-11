@@ -6,10 +6,11 @@
 Idempotent — safe to re-run on reinstall/migrate. Runs as Administrator during install, so
 ``ignore_permissions=True`` is appropriate here (unlike ``api.py``, which respects the caller's role).
 
-Provisions: the **Shop Cashier** role (API-only) + the resource reads the till needs, a **"HitPay"
-Mode of Payment**, a generic **"Walk-in Customer"**, and default **Checkout Settings**. It intentionally
-does NOT create shops — POS Profiles (with their warehouse, price list, cashier users and the HitPay
-payment method) are created per deployment.
+Provisions: the self-contained **Shop Cashier** role (API-only, carrying every permission the till
+needs), a login-less **service account** for the webhook, a **"HitPay" Mode of Payment**, a generic
+**"Walk-in Customer"**, and default **Checkout Settings**. It intentionally does NOT create shops — POS
+Profiles (with their warehouse, price list, cashier users and the HitPay payment method) are created
+per deployment.
 """
 
 from __future__ import annotations
@@ -19,8 +20,28 @@ import frappe
 from pos.utils import SERVICE_USER
 
 CASHIER_ROLE = "Shop Cashier"
-# The till reads these to populate its catalogue; the role is otherwise scoped to Checkout DocTypes.
-RESOURCE_DOCTYPES = ("Item", "Item Price", "Item Barcode", "Bin", "Warehouse", "Customer")
+
+# The Shop Cashier role is self-contained: it carries every permission the till needs under the
+# cashier's own identity — no per-user Accounts User / Sales Manager assignment. Two sets:
+#   * read masters — the catalogue the till lists, plus the accounting/pricing masters ERPNext's
+#     get_item_details / tax engine validate against the live user while building the draft invoice;
+#   * write transactions — the POS docs the cashier creates itself: the draft POS Invoice (create only,
+#     the webhook service account submits it), opening/closing the POS day, and the End-of-Day
+#     consolidated Stock Entry.
+CASHIER_READ_DOCTYPES = (
+    "Item", "Item Price", "Item Barcode", "Item Group", "Bin", "Warehouse", "UOM",
+    "Customer", "Customer Group", "Territory",
+    "Company", "Currency", "Price List",
+    "Account", "Cost Center", "Mode of Payment",
+    "Pricing Rule", "Sales Taxes and Charges Template", "Item Tax Template",
+    "POS Profile",
+)
+CASHIER_WRITE_PERMS = {
+    "POS Invoice": ("read", "write", "create"),            # draft only — the webhook submits
+    "POS Opening Entry": ("read", "write", "create", "submit"),
+    "POS Closing Entry": ("read", "write", "create", "submit"),
+    "Stock Entry": ("read", "write", "create", "submit"),  # End-of-Day consolidated Material Issue
+}
 HITPAY_MODE_OF_PAYMENT = "HitPay"
 WALK_IN_CUSTOMER = "Walk-in Customer"
 
@@ -41,9 +62,10 @@ def after_install() -> None:
     aborting. Every step is idempotent, so once the cause is fixed this can be re-run with
     ``bench execute pos.install.after_install``.
 
-    Note (native permission model): cashier users must additionally be granted the **Accounts User** role
-    (to build the draft POS Invoice under their own permissions), and a **manager** must run ``open_day``
-    at shop start to open the POS session. See README.
+    Note (native permission model): the **Shop Cashier** role is self-contained — granting a user that
+    one role gives the till everything it needs under the user's own identity (build the draft POS
+    Invoice, open/close the POS day, End-of-Day stock). No Accounts User / Sales Manager assignment,
+    no separate manager to open the day. See README.
     """
     # Critical: let these raise. An abort here rolls the app back cleanly instead of installing it broken.
     _ensure_cashier_role()
@@ -51,7 +73,7 @@ def after_install() -> None:
     frappe.db.commit()
 
     steps = (
-        ("resource read grants", _grant_resource_read),
+        ("cashier role permissions", _grant_cashier_permissions),
         ("HitPay mode of payment", _ensure_hitpay_mode_of_payment),
         ("walk-in customer", _ensure_walk_in_customer),
         ("checkout settings", _seed_settings),
@@ -114,20 +136,31 @@ def _ensure_service_account() -> None:
     user.save(ignore_permissions=True)
 
 
-def _grant_resource_read() -> None:
-    """Give the cashier role read on the catalogue source DocTypes (else /api/resource calls 403)."""
-    for doctype in RESOURCE_DOCTYPES:
-        if not frappe.db.exists("Custom DocPerm", {"parent": doctype, "role": CASHIER_ROLE}):
-            frappe.get_doc(
-                {
-                    "doctype": "Custom DocPerm",
-                    "parent": doctype,
-                    "parenttype": "DocType",
-                    "parentfield": "permissions",
-                    "role": CASHIER_ROLE,
-                    "read": 1,
-                }
-            ).insert(ignore_permissions=True)
+def _grant_cashier_permissions() -> None:
+    """Grant the Shop Cashier role every permission the till needs under its own identity: read on the
+    catalogue + pricing masters, and create/submit on the POS transaction docs it writes. Makes the role
+    self-contained — no per-user Accounts User / Sales Manager assignment. Idempotent."""
+    for doctype in CASHIER_READ_DOCTYPES:
+        _grant_role_perm(doctype, ("read",))
+    for doctype, rights in CASHIER_WRITE_PERMS.items():
+        _grant_role_perm(doctype, rights)
+
+
+def _grant_role_perm(doctype: str, rights: tuple[str, ...]) -> None:
+    """Additively grant the cashier role ``rights`` on ``doctype`` at permlevel 0.
+
+    Uses Frappe's permission API rather than a raw ``Custom DocPerm`` insert. ``add_permission`` copies
+    the doctype's *standard* perms into Custom DocPerm the first time (preserving every existing role)
+    before adding ours — a raw insert would instead replace the standard perms wholesale, silently
+    stripping every other role's access to that doctype site-wide. Idempotent (``add_permission`` is a
+    no-op once the row exists; the property updates re-assert the flags)."""
+    if not frappe.db.exists("DocType", doctype):
+        return
+    from frappe.permissions import add_permission, update_permission_property
+
+    add_permission(doctype, CASHIER_ROLE, 0)
+    for right in rights:
+        update_permission_property(doctype, CASHIER_ROLE, 0, right, "1")
 
 
 def _ensure_hitpay_mode_of_payment() -> None:
