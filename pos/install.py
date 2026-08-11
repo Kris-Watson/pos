@@ -139,11 +139,29 @@ def _ensure_service_account() -> None:
 def _grant_cashier_permissions() -> None:
     """Grant the Shop Cashier role every permission the till needs under its own identity: read on the
     catalogue + pricing masters, and create/submit on the POS transaction docs it writes. Makes the role
-    self-contained — no per-user Accounts User / Sales Manager assignment. Idempotent."""
-    for doctype in CASHIER_READ_DOCTYPES:
-        _grant_role_perm(doctype, ("read",))
-    for doctype, rights in CASHIER_WRITE_PERMS.items():
-        _grant_role_perm(doctype, rights)
+    self-contained — no per-user Accounts User / Sales Manager assignment. Idempotent.
+
+    Each doctype is granted **independently** (its own commit): a failure on one (e.g. a doctype whose
+    name differs on this bench) is logged and skipped, so it can never roll back the grants that did
+    succeed. Re-run ``bench execute pos.install.after_install`` after fixing any skipped one."""
+    grants = [(dt, ("read",)) for dt in CASHIER_READ_DOCTYPES]
+    grants += list(CASHIER_WRITE_PERMS.items())
+
+    skipped = []
+    for doctype, rights in grants:
+        try:
+            _grant_role_perm(doctype, rights)
+            frappe.db.commit()
+        except Exception:
+            frappe.db.rollback()
+            skipped.append(doctype)
+            frappe.log_error(frappe.get_traceback(), f"Self Checkout: cashier perm grant failed for {doctype}")
+    if skipped:
+        frappe.log_error(
+            "Cashier permission grants skipped for: " + ", ".join(skipped) + ". The rest are committed; "
+            "fix these and re-run `bench execute pos.install.after_install`.",
+            "Self Checkout install incomplete",
+        )
 
 
 def _grant_role_perm(doctype: str, rights: tuple[str, ...]) -> None:
