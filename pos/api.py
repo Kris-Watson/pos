@@ -204,11 +204,15 @@ def catalog_changed_since(since: str, since_key: str | None = None) -> dict:
 @frappe.whitelist(methods=["POST"])
 @with_deadlock_retry
 def create_session(items_json, bag_qty: str = "0") -> dict:
-    """Create a Pending Checkout Session from the cart, recomputing every rate from Item Price.
+    """Create a Pending Checkout Session from the cart and build its draft POS Invoice.
 
-    The device's own totals are never trusted — this is the authoritative amount that the HitPay
-    request (and later the POS Invoice) is built from.
+    The device's own totals are never trusted. A draft (unsubmitted) POS Invoice is built immediately and
+    is the pricing source of truth — ERPNext prices it with the selling price list, Pricing Rules and
+    taxes, and its total becomes the authoritative amount the HitPay request is built from. The draft is
+    submitted on payment success (``finalize_paid_session``) or deleted on failure (``discard_draft_invoice``).
     """
+    from pos import stock
+
     frappe.has_permission("Checkout Session", "create", throw=True)
     profile = resolve_pos_profile()
     settings = get_settings()
@@ -244,13 +248,22 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
         doc.bag_qty = bags
         doc.bag_amount = bags * item_price(settings.bag_item, price_list)
 
-    doc.insert()  # validate() recomputes net/grand totals; permissions enforced (no ignore)
+    doc.insert()  # validate() recomputes provisional net/grand totals; permissions enforced (no ignore)
+
+    # Build the draft POS Invoice — this is the authoritative pricing (rules + tax + rounding). Overwrite
+    # the session's provisional total with the draft's so HitPay is charged exactly what will be booked.
+    draft = stock.build_draft_invoice(doc)
+    charge = flt(draft.rounded_total) or flt(draft.grand_total)
+    frappe.db.set_value(
+        "Checkout Session", doc.name, {"pos_invoice": draft.name, "grand_total": charge}, update_modified=False
+    )
+
     frappe.db.commit()
     return {
         "session": doc.name,
         "reference_number": doc.name,
         "currency": doc.currency,
-        "grand_total": flt(doc.grand_total),
+        "grand_total": charge,
     }
 
 

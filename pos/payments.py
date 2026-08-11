@@ -182,10 +182,12 @@ def _parse_payload(raw: str, form: dict) -> dict:
         or (payments[0].get("id") if payments else None)
         or src.get("id")
     )
+    amount = src.get("amount") or (payments[0].get("amount") if payments else None)
     return {
         "reference_number": src.get("reference_number"),
         "request_id": src.get("payment_request_id") or (body.get("id") if body else form.get("id")),
         "payment_id": payment_id,
+        "amount": flt(amount) if amount is not None else None,
         "status": (src.get("status") or "").lower(),
         "object_type": _safe_header("Hitpay-Event-Object"),
         "event_type": _safe_header("Hitpay-Event-Type"),
@@ -254,7 +256,13 @@ def process_payment_event(payload: dict) -> None:
     if flipped and new_status == "Paid":
         from pos import stock
 
-        stock.convert_session_to_invoice(session)
+        # Submit the draft invoice, reconciling its total against HitPay's gross charge (fees excluded).
+        stock.finalize_paid_session(session, payload.get("amount"))
+    elif flipped and new_status == "Failed":
+        from pos import stock
+
+        # No sale happened — drop the unpaid draft invoice so it doesn't linger.
+        stock.discard_draft_invoice(session)
 
     # Push the result to the originating cashier (fire-and-forget; app also polls session_status).
     from pos import realtime

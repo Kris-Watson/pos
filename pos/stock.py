@@ -28,15 +28,16 @@ from frappe.utils import flt, now_datetime, today
 from pos.utils import get_settings, resolve_pos_profile
 
 
-def convert_session_to_invoice(session_name: str) -> str | None:
-    """Create + submit the POS Invoice for a Paid session. Idempotent: a session that already has an
-    invoice is left alone. Returns the POS Invoice name (or the existing one)."""
-    session = frappe.get_doc("Checkout Session", session_name)
-    if session.pos_invoice:
-        return session.pos_invoice
-    if session.status != "Paid":
-        return None
+def build_draft_invoice(session) -> object:
+    """Build + insert an **unsubmitted** POS Invoice (docstatus 0) for a Pending session.
 
+    This is the pricing source of truth: ERPNext prices the cart here — applying the selling price list,
+    any **Pricing Rules/discounts**, item tax templates and rounding — so the draft's ``rounded_total`` is
+    the exact amount payable that the HitPay request is built from. Lines are appended with item_code+qty
+    only (no rate) so ``get_item_details`` derives the effective rate. Returns the inserted draft doc.
+
+    Nothing hits the GL or stock ledger yet — that happens only when ``finalize_paid_session`` submits it.
+    """
     settings = get_settings()
     profile = frappe.get_doc("POS Profile", session.pos_profile)
     company = settings.company or profile.company
@@ -55,37 +56,86 @@ def convert_session_to_invoice(session_name: str) -> str | None:
     inv.posting_date = today()
     inv.update_stock = 1 if realtime_stock else 0
     inv.set_warehouse = session.warehouse
+    inv.remarks = f"Self-checkout {session.name}"
 
     for row in session.items:
-        inv.append(
-            "items",
-            {"item_code": row.item_code, "qty": row.qty, "rate": row.rate, "warehouse": session.warehouse},
-        )
+        inv.append("items", {"item_code": row.item_code, "qty": row.qty, "warehouse": session.warehouse})
     if session.bag_qty and settings.bag_item:
-        inv.append(
-            "items",
-            {
-                "item_code": settings.bag_item,
-                "qty": session.bag_qty,
-                "rate": flt(session.bag_amount) / session.bag_qty,
-                "warehouse": session.warehouse,
-            },
-        )
+        inv.append("items", {"item_code": settings.bag_item, "qty": session.bag_qty, "warehouse": session.warehouse})
 
-    # Book the whole amount to the HitPay mode of payment (its account is the clearing account).
-    inv.append(
-        "payments",
-        {"mode_of_payment": settings.hitpay_mode_of_payment, "amount": flt(session.grand_total)},
-    )
+    # Price it (pricing rules + taxes + rounding), then attach a full payment so the draft is valid and
+    # not "partially paid". The payment is re-synced to the current total again at submit time.
+    inv.set_missing_values()
+    inv.run_method("calculate_taxes_and_totals")
+    total = flt(inv.rounded_total) or flt(inv.grand_total)
+    inv.append("payments", {"mode_of_payment": settings.hitpay_mode_of_payment, "amount": total})
 
     inv.flags.ignore_permissions = True
-    inv.insert(ignore_permissions=True)
+    inv.insert(ignore_permissions=True)  # docstatus 0 — draft, no GL/stock yet
+    return inv
+
+
+def finalize_paid_session(session_name: str, charged_amount: float | None = None) -> str | None:
+    """Submit the session's draft POS Invoice once payment is confirmed. Idempotent.
+
+    Reconciles the invoice total against what HitPay actually charged (gross, fees excluded): if they
+    differ by more than a cent we **still submit** (the money was taken — the sale must be recorded) but
+    log the mismatch for review. Returns the submitted POS Invoice name.
+    """
+    session = frappe.get_doc("Checkout Session", session_name)
+    if session.status != "Paid":
+        return None
+    if not session.pos_invoice:
+        # No draft to submit (shouldn't happen) — build one now as a fallback so the sale is still booked.
+        inv = build_draft_invoice(session)
+        session.db_set("pos_invoice", inv.name, update_modified=False)
+    else:
+        inv = frappe.get_doc("POS Invoice", session.pos_invoice)
+
+    if inv.docstatus == 1:
+        return inv.name  # already submitted — replay/idempotent
+    if inv.docstatus == 2:
+        return None  # cancelled
+
+    settings = get_settings()
+    realtime_stock = (session.stock_mode or settings.stock_mode) == "Realtime"
+
+    # Re-sync the payment to the invoice's current total so submit is never rejected as a partial payment.
+    inv.run_method("calculate_taxes_and_totals")
+    total = flt(inv.rounded_total) or flt(inv.grand_total)
+    if inv.payments:
+        inv.payments[0].mode_of_payment = settings.hitpay_mode_of_payment
+        inv.payments[0].amount = total
+    else:
+        inv.append("payments", {"mode_of_payment": settings.hitpay_mode_of_payment, "amount": total})
+
+    if charged_amount is not None and abs(total - flt(charged_amount)) > 0.01:
+        frappe.log_error(
+            f"Session {session_name}: invoice total {total} != HitPay charged {flt(charged_amount)} "
+            f"(fees excluded). Submitting anyway — verify pricing/tax config.",
+            "Self Checkout amount mismatch",
+        )
+
+    inv.flags.ignore_permissions = True
+    inv.save(ignore_permissions=True)
     inv.submit()
 
-    session.db_set("pos_invoice", inv.name, update_modified=False)
     session.db_set("stock_posted", 1 if realtime_stock else 0, update_modified=False)
     frappe.db.commit()
     return inv.name
+
+
+def discard_draft_invoice(session_name: str) -> None:
+    """Delete the session's draft POS Invoice on a failed/expired/canceled payment — no sale happened, so
+    the unpaid draft shouldn't linger. Only touches drafts (docstatus 0); a submitted invoice is left alone."""
+    session = frappe.get_doc("Checkout Session", session_name)
+    if not session.pos_invoice:
+        return
+    inv = frappe.get_doc("POS Invoice", session.pos_invoice)
+    if inv.docstatus == 0:
+        frappe.delete_doc("POS Invoice", inv.name, ignore_permissions=True, force=True)
+        session.db_set("pos_invoice", None, update_modified=False)
+        frappe.db.commit()
 
 
 def _ensure_open_pos_entry(profile, user: str, company: str) -> str:

@@ -8,13 +8,14 @@ from frappe.utils import flt, cint
 class CheckoutSession(Document):
     """A pending self-checkout cart awaiting an (asynchronous) HitPay payment.
 
-    Lifecycle: created ``Pending`` by ``api.create_session`` (which recomputes every rate from Item
-    Price — the client total is never trusted), a HitPay request is attached by ``api.start_payment``,
-    and the ``hitpay_webhook`` flips it to ``Paid``/``Failed``. On ``Paid`` it is converted into a
-    native POS Invoice (see ``stock.py``); abandoned or failed carts leave no invoice.
+    Lifecycle: created ``Pending`` by ``api.create_session``, which also builds a **draft** POS Invoice
+    (the authoritative pricing — rules + tax) and links it via ``pos_invoice``. A HitPay request is
+    attached by ``api.start_payment``; the ``hitpay_webhook`` flips it to ``Paid``/``Failed``. On ``Paid``
+    the draft is submitted (``stock.finalize_paid_session``); on failure it is deleted
+    (``stock.discard_draft_invoice``) so no unpaid invoice lingers.
 
-    ``validate`` re-derives the money fields from the line items + bag so totals stay internally
-    consistent no matter who edits the doc (API, desk form, Data Import).
+    ``validate`` re-derives *provisional* money fields from the line items + bag; the authoritative
+    ``grand_total`` is overwritten from the priced draft invoice right after insert.
     """
 
     def validate(self):
