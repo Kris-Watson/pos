@@ -117,11 +117,42 @@ def _catalog_version_value(price_list: str, warehouse: str) -> dict:
     return {"max_modified": str(max_modified) if max_modified else None, "count": int(ip[1] or 0)}
 
 
-def _catalog_rows(price_list: str, warehouse: str, item_codes: list[str] | None = None) -> list[dict]:
+def _pos_item_groups(profile) -> set[str] | None:
+    """Item groups this POS Profile may sell — the profile's ``item_groups`` table, expanded to include
+    descendant groups (a parent group in the table covers its children, matching ERPNext's own POS).
+
+    Returns ``None`` when the table is empty: no restriction, every group is allowed.
+    """
+    roots = [r.item_group for r in (profile.get("item_groups") or []) if r.item_group]
+    if not roots:
+        return None
+    allowed: set[str] = set()
+    for g in roots:
+        bounds = frappe.db.get_value("Item Group", g, ["lft", "rgt"])
+        if bounds and bounds[0] is not None:
+            allowed |= set(
+                frappe.get_all(
+                    "Item Group",
+                    filters={"lft": [">=", bounds[0]], "rgt": ["<=", bounds[1]]},
+                    pluck="name",
+                )
+            )
+        else:
+            allowed.add(g)
+    return allowed
+
+
+def _catalog_rows(
+    price_list: str,
+    warehouse: str,
+    item_codes: list[str] | None = None,
+    item_groups: set[str] | None = None,
+) -> list[dict]:
     """Merged product rows (price + item meta + first barcode + on-hand qty) for the shop.
 
     Base set = items with a selling Item Price on ``price_list`` (only sellable items). When
-    ``item_codes`` is given the result is restricted to those (used by the delta endpoint).
+    ``item_codes`` is given the result is restricted to those (used by the delta endpoint). When
+    ``item_groups`` is given (the POS Profile's allowed groups) items outside those groups are excluded.
     """
     price_filters = {"price_list": price_list, "selling": 1}
     if item_codes is not None:
@@ -145,11 +176,15 @@ def _catalog_rows(price_list: str, warehouse: str, item_codes: list[str] | None 
     # throws, so a per-item fallback to the raw price_list_rate is still applied below for safety.
     eff = effective_rates(codes, price_list, warehouse=warehouse)
 
+    item_filters: dict = {"name": ["in", codes]}
+    if item_groups is not None:
+        # Only items in groups the POS Profile sells; items outside drop out of the dict → skipped below.
+        item_filters["item_group"] = ["in", list(item_groups)]
     items = {
         i.name: i
         for i in frappe.get_all(
             "Item",
-            filters={"name": ["in", codes]},
+            filters=item_filters,
             fields=["name", "item_name", "image", "stock_uom", "disabled"],
         )
     }
@@ -196,12 +231,13 @@ def catalog_snapshot() -> dict:
     _assert_catalog_read()
     profile = resolve_pos_profile()
     price_list, warehouse = profile.selling_price_list, profile.warehouse
+    item_groups = _pos_item_groups(profile)
     return {
         "price_list": price_list,
         "warehouse": warehouse,
         "currency": profile.currency,
         "version": _catalog_version_value(price_list, warehouse),
-        "items": _catalog_rows(price_list, warehouse),
+        "items": _catalog_rows(price_list, warehouse, item_groups=item_groups),
     }
 
 
@@ -247,6 +283,7 @@ def catalog_changed_since(since: str, since_key: str | None = None) -> dict:
     _assert_catalog_read()
     profile = resolve_pos_profile()
     price_list, warehouse = profile.selling_price_list, profile.warehouse
+    item_groups = _pos_item_groups(profile)
     cutoff = get_datetime(since)
 
     codes: set[str] = set()
@@ -264,9 +301,9 @@ def catalog_changed_since(since: str, since_key: str | None = None) -> dict:
     codes |= _deleted_catalog_codes(price_list, cutoff)
 
     candidate = list(codes)[:_CATALOG_CAP]
-    rows = _catalog_rows(price_list, warehouse, candidate)
-    # Any candidate that changed but is NOT a current, valid catalogue row (disabled, de-priced, or
-    # deleted) is a removal — the client deletes these from its cache.
+    rows = _catalog_rows(price_list, warehouse, candidate, item_groups=item_groups)
+    # Any candidate that changed but is NOT a current, valid catalogue row (disabled, de-priced,
+    # deleted, or now outside the profile's item groups) is a removal — the client deletes these.
     present = {r["item_code"] for r in rows}
     removed = [c for c in candidate if c and c not in present]
     return {
