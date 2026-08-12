@@ -347,6 +347,8 @@ def get_receipt(session: str, fmt: str = "html") -> dict:
         frappe.throw(_("This checkout has no invoice yet."))
     frappe.has_permission("POS Invoice", "read", doc.pos_invoice, throw=True)
 
+    # Use the format configured on the POS Profile — the admin designs their own receipt Print Format in the
+    # Print Formats tab and sets it there; ERPNext falls back to the doctype default when unset.
     print_format = frappe.db.get_value("POS Profile", doc.pos_profile, "print_format") or None
 
     if (fmt or "html").lower() == "pdf":

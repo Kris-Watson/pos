@@ -35,6 +35,26 @@ from frappe.utils import flt, now_datetime, today
 from pos.utils import get_settings, resolve_pos_profile
 
 
+def _apply_full_payment(inv, mode: str, total: float) -> None:
+    """Make the invoice fully paid by HitPay as a single payment row.
+
+    POS Invoice.set_missing_values() already populates ``payments`` from the POS Profile and assigns the
+    amount due to the profile's **default** mode (HitPay). We must therefore NOT append our own row — doing
+    so left two HitPay rows, doubling ``paid_amount`` and producing a phantom ``change_amount``. Instead we
+    put the full ``total`` on the existing HitPay row and zero every other mode, so exactly one line is paid
+    regardless of how many modes the profile lists. Only appends a row if the profile seeded none.
+    """
+    target = None
+    for p in inv.get("payments") or []:
+        if target is None and p.mode_of_payment == mode:
+            target = p
+            p.amount = total
+        else:
+            p.amount = 0
+    if target is None:
+        inv.append("payments", {"mode_of_payment": mode, "amount": total})
+
+
 def build_draft_invoice(session) -> object:
     """Build + insert an **unsubmitted** POS Invoice (docstatus 0) for a Pending session.
 
@@ -80,12 +100,13 @@ def build_draft_invoice(session) -> object:
     if session.bag_qty and settings.bag_item:
         inv.append("items", {"item_code": settings.bag_item, "qty": session.bag_qty, "warehouse": session.warehouse})
 
-    # Price it (pricing rules + taxes + rounding), then attach a full payment so the draft is valid and
-    # not "partially paid". The payment is re-synced to the current total again at submit time.
+    # Price it (pricing rules + taxes + rounding), then make it fully paid by HitPay so the draft is valid
+    # and not "partially paid". set_missing_values already seeded the payment from the profile's default
+    # mode; we sync the amount onto that single row (see _apply_full_payment). Re-synced again at submit.
     inv.set_missing_values()
     inv.run_method("calculate_taxes_and_totals")
     total = flt(inv.rounded_total) or flt(inv.grand_total)
-    inv.append("payments", {"mode_of_payment": settings.hitpay_mode_of_payment, "amount": total})
+    _apply_full_payment(inv, settings.hitpay_mode_of_payment, total)
 
     inv.insert()  # native perms (cashier: Shop Cashier + Accounts User); docstatus 0 — no GL/stock yet
     return inv
@@ -128,11 +149,7 @@ def finalize_paid_session(session_name: str, charged_amount: float | None = None
     # Re-sync the payment to the invoice's current total so submit is never rejected as a partial payment.
     inv.run_method("calculate_taxes_and_totals")
     total = flt(inv.rounded_total) or flt(inv.grand_total)
-    if inv.payments:
-        inv.payments[0].mode_of_payment = settings.hitpay_mode_of_payment
-        inv.payments[0].amount = total
-    else:
-        inv.append("payments", {"mode_of_payment": settings.hitpay_mode_of_payment, "amount": total})
+    _apply_full_payment(inv, settings.hitpay_mode_of_payment, total)
 
     if charged_amount is not None and abs(total - flt(charged_amount)) > 0.01:
         frappe.log_error(
