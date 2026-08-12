@@ -12,10 +12,11 @@ Surface: login context + shop gating (``get_app_context``), catalogue delta-sync
 from __future__ import annotations
 
 import base64
+import json
 
 import frappe
 from frappe import _
-from frappe.utils import flt, get_datetime
+from frappe.utils import cint, flt, get_datetime
 
 from pos.utils import (
     effective_rates,
@@ -204,10 +205,44 @@ def catalog_snapshot() -> dict:
     }
 
 
+def _deleted_catalog_codes(price_list: str, cutoff) -> set[str]:
+    """Item codes that left the catalogue via a **hard delete** since ``cutoff`` — the Item was removed,
+    or its selling Item Price on this list was removed. A modified-based delta can't see these (the row
+    is gone, so there's no ``modified`` to match), so read them from Frappe's ``Deleted Document`` log.
+
+    Trusted internal reconciliation returning item codes only, so ``get_all`` (perms already asserted by
+    ``_assert_catalog_read`` on the catalogue doctypes; Deleted Document is a system log, not user data).
+    """
+    removed: set[str] = set()
+    for dd in frappe.get_all(
+        "Deleted Document",
+        filters={"deleted_doctype": "Item", "creation": [">", cutoff]},
+        fields=["deleted_name"],
+    ):
+        if dd.deleted_name:
+            removed.add(dd.deleted_name)
+    for dd in frappe.get_all(
+        "Deleted Document",
+        filters={"deleted_doctype": "Item Price", "creation": [">", cutoff]},
+        fields=["data"],
+    ):
+        try:
+            d = json.loads(dd.data or "{}")
+        except (ValueError, TypeError):
+            continue
+        if d.get("price_list") == price_list and cint(d.get("selling")) and d.get("item_code"):
+            removed.add(d["item_code"])
+    return removed
+
+
 @frappe.whitelist()
 def catalog_changed_since(since: str, since_key: str | None = None) -> dict:
     """Items whose price / meta / barcode / on-hand qty changed after ``since`` (client applies as a
     delta into its Room cache — never a full reload). ``since_key`` reserved for keyset paging.
+
+    Also returns ``removed``: item codes that are no longer catalogue members (disabled, de-priced, or
+    hard-deleted) so the client prunes them from its cache — otherwise a removed item lingers on-device
+    until a full re-baseline.
     """
     _assert_catalog_read()
     profile = resolve_pos_profile()
@@ -225,11 +260,19 @@ def catalog_changed_since(since: str, since_key: str | None = None) -> dict:
     codes |= set(frappe.get_all("Bin", filters={"warehouse": warehouse, "modified": [">", cutoff]}, pluck="item_code"))
     codes |= set(frappe.get_all("Item", filters={"modified": [">", cutoff]}, pluck="name"))
     codes |= set(frappe.get_all("Item Barcode", filters={"modified": [">", cutoff]}, pluck="parent"))
+    # Fold in hard-deletes (Item / selling Item Price rows gone) so they can be reported as removed.
+    codes |= _deleted_catalog_codes(price_list, cutoff)
 
-    rows = _catalog_rows(price_list, warehouse, list(codes)[:_CATALOG_CAP])
+    candidate = list(codes)[:_CATALOG_CAP]
+    rows = _catalog_rows(price_list, warehouse, candidate)
+    # Any candidate that changed but is NOT a current, valid catalogue row (disabled, de-priced, or
+    # deleted) is a removal — the client deletes these from its cache.
+    present = {r["item_code"] for r in rows}
+    removed = [c for c in candidate if c and c not in present]
     return {
         "version": _catalog_version_value(price_list, warehouse),
         "items": rows,
+        "removed": removed,
     }
 
 
