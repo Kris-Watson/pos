@@ -297,6 +297,10 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
         "session": doc.name,
         "reference_number": doc.name,
         "currency": doc.currency,
+        # Display-only breakdown for the checkout screen. `grand_total` (below) remains the sole charged
+        # amount pushed to HitPay — net_total/total_taxes never feed the payment.
+        "net_total": flt(draft.net_total),
+        "total_taxes": flt(draft.total_taxes_and_charges),
         "grand_total": charge,
     }
 
