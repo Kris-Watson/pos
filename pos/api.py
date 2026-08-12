@@ -37,12 +37,14 @@ _CATALOG_CAP = 5000
 # --------------------------------------------------------------------------------------------------
 # Login context / shop gating
 # --------------------------------------------------------------------------------------------------
-@frappe.whitelist()
 def _pos_tax_rate(profile) -> float:
     """Effective percentage tax rate (e.g. GST) the POS Profile applies, via its Sales Taxes and Charges
     Template. Sums the ``On Net Total`` percentage rows — a simple single-GST shop has one. Returns 0.0 when
     the profile applies no template. Used only for a client-side pre-charge display; the authoritative tax is
     still what ERPNext computes on the draft invoice at ``create_session``.
+
+    Not whitelisted — an internal helper. ``frappe.get_all`` is a trusted server-side rate lookup (the cart
+    only displays it), so it needs no cashier read grant on the tax master.
     """
     template = getattr(profile, "taxes_and_charges", None)
     if not template:
@@ -56,6 +58,7 @@ def _pos_tax_rate(profile) -> float:
     return flt(sum(flt(r.rate) for r in rows))
 
 
+@frappe.whitelist()
 def get_app_context() -> dict:
     """Resolve the logged-in cashier to their shop + config in one round-trip.
 
