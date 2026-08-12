@@ -38,6 +38,24 @@ _CATALOG_CAP = 5000
 # Login context / shop gating
 # --------------------------------------------------------------------------------------------------
 @frappe.whitelist()
+def _pos_tax_rate(profile) -> float:
+    """Effective percentage tax rate (e.g. GST) the POS Profile applies, via its Sales Taxes and Charges
+    Template. Sums the ``On Net Total`` percentage rows — a simple single-GST shop has one. Returns 0.0 when
+    the profile applies no template. Used only for a client-side pre-charge display; the authoritative tax is
+    still what ERPNext computes on the draft invoice at ``create_session``.
+    """
+    template = getattr(profile, "taxes_and_charges", None)
+    if not template:
+        return 0.0
+    rows = frappe.get_all(
+        "Sales Taxes and Charges",
+        filters={"parent": template, "parenttype": "Sales Taxes and Charges Template",
+                 "charge_type": "On Net Total"},
+        fields=["rate"],
+    )
+    return flt(sum(flt(r.rate) for r in rows))
+
+
 def get_app_context() -> dict:
     """Resolve the logged-in cashier to their shop + config in one round-trip.
 
@@ -64,6 +82,8 @@ def get_app_context() -> dict:
         "currency": profile.currency or settings.default_currency or "SGD",
         "stock_mode": settings.stock_mode,
         "bag_price": bag_price,
+        # GST-exclusive rate (%) for the cart's pre-charge tax preview; 0 when the profile applies no tax.
+        "gst_rate": _pos_tax_rate(profile),
         "payment_methods": DEFAULT_HITPAY_METHODS,
         # The card-reader id is configured per-device on the app (each kiosk owns its reader) and passed to
         # start_payment, so whether to offer card-present is a device-local decision — not reported here.
