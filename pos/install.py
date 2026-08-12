@@ -45,12 +45,24 @@ CASHIER_WRITE_PERMS = {
 HITPAY_MODE_OF_PAYMENT = "HitPay"
 WALK_IN_CUSTOMER = "Walk-in Customer"
 
-# Backend identity for the caller-less webhook (see payments.process_payment_event). Its own role carries
-# write on Checkout Session + create on Checkout Payment Event (in the doctype JSONs); the ERPNext roles
-# below give it exactly what a sale needs — Accounts User (submit POS Invoice), Sales Manager (POS
-# Opening/Closing Entry), Stock User (Stock Entry) — and nothing more (well below System Manager).
+# Backend identity for the caller-less webhook (see payments.process_payment_event). Like Shop Cashier,
+# the Checkout Service role is **self-contained**: assigning a user that one role gives it everything the
+# webhook path needs — no Accounts User / Sales Manager / Stock User / Shop Cashier assignment. Its write
+# on Checkout Session + create on Checkout Payment Event come from the doctype JSONs; the grants below add
+# the rest:
+#   * read masters — submitting the draft POS Invoice re-runs the same validation the cashier's draft did,
+#     which READS the masters (Customer, Item, Account, Pricing Rule, …). The cashier grants make those
+#     doctypes Custom-DocPerm-managed site-wide, so standard reads no longer apply — the role must be in
+#     each doctype's perm list explicitly, or submit raises PermissionError (first on Customer).
+#   * write POS Invoice — submit the cashier's draft on payment success, or delete it on failure/expiry.
 SERVICE_ROLE = "Checkout Service"
-SERVICE_ERPNEXT_ROLES = ("Accounts User", "Sales Manager", "Stock User")
+SERVICE_READ_DOCTYPES = CASHIER_READ_DOCTYPES
+SERVICE_WRITE_PERMS = {
+    # Submit the draft the cashier created (success), or delete it (payment failed/expired). No create —
+    # the till builds the draft; the service only finalises it.
+    "POS Invoice": ("read", "write", "submit", "delete"),
+    "POS Opening Entry": ("read",),  # submit-time validation reads the open POS session
+}
 
 
 def after_install() -> None:
@@ -74,6 +86,7 @@ def after_install() -> None:
 
     steps = (
         ("cashier role permissions", _grant_cashier_permissions),
+        ("service role permissions", _grant_service_permissions),
         ("HitPay mode of payment", _ensure_hitpay_mode_of_payment),
         ("walk-in customer", _ensure_walk_in_customer),
         ("checkout settings", _seed_settings),
@@ -105,8 +118,9 @@ def _ensure_cashier_role() -> None:
 
 
 def _ensure_service_account() -> None:
-    """Create the webhook backend identity: a **login-less System User** holding only the roles a sale
-    needs. Used solely via ``frappe.set_user`` in the caller-less webhook path — never on a user endpoint."""
+    """Create the webhook backend identity: a **login-less System User** holding only the self-contained
+    Checkout Service role. Used solely via ``frappe.set_user`` in the caller-less webhook path — never on
+    a user endpoint."""
     if not frappe.db.exists("Role", SERVICE_ROLE):
         frappe.get_doc({"doctype": "Role", "role_name": SERVICE_ROLE, "desk_access": 0}).insert(
             ignore_permissions=True
@@ -127,45 +141,60 @@ def _ensure_service_account() -> None:
         user.flags.no_welcome_mail = True
         user.insert(ignore_permissions=True)
 
-    # Assign the minimal role set (idempotent). The ERPNext roles exist because erpnext is a required_app.
+    # Assign ONLY the Checkout Service role (idempotent). It is self-contained — the grants in
+    # _grant_service_permissions give it every master read + POS Invoice write the webhook path needs, so
+    # no Accounts User / Sales Manager / Stock User / Shop Cashier assignment is required.
     user = frappe.get_doc("User", SERVICE_USER)
     have = {r.role for r in user.roles}
-    for role in (SERVICE_ROLE, *SERVICE_ERPNEXT_ROLES):
-        if role not in have and frappe.db.exists("Role", role):
-            user.append("roles", {"role": role})
-    user.save(ignore_permissions=True)
+    if SERVICE_ROLE not in have:
+        user.append("roles", {"role": SERVICE_ROLE})
+        user.save(ignore_permissions=True)
 
 
 def _grant_cashier_permissions() -> None:
     """Grant the Shop Cashier role every permission the till needs under its own identity: read on the
     catalogue + pricing masters, and create/submit on the POS transaction docs it writes. Makes the role
-    self-contained — no per-user Accounts User / Sales Manager assignment. Idempotent.
-
-    Each doctype is granted **independently** (its own commit): a failure on one (e.g. a doctype whose
-    name differs on this bench) is logged and skipped, so it can never roll back the grants that did
-    succeed. Re-run ``bench execute pos.install.after_install`` after fixing any skipped one."""
+    self-contained — no per-user Accounts User / Sales Manager assignment. Idempotent."""
     grants = [(dt, ("read",)) for dt in CASHIER_READ_DOCTYPES]
     grants += list(CASHIER_WRITE_PERMS.items())
+    _grant_role_perms(CASHIER_ROLE, grants, "cashier")
 
+
+def _grant_service_permissions() -> None:
+    """Grant the Checkout Service role every permission the webhook path needs under its own identity:
+    read on the same catalogue + pricing masters the cashier's draft reads (submitting re-runs that
+    validation), plus write/submit/delete on the POS Invoice it finalises. Makes the role self-contained —
+    no Accounts User / Sales Manager / Stock User / Shop Cashier assignment. Idempotent (see
+    _grant_cashier_permissions for the per-doctype isolation rationale)."""
+    grants = [(dt, ("read",)) for dt in SERVICE_READ_DOCTYPES]
+    grants += list(SERVICE_WRITE_PERMS.items())
+    _grant_role_perms(SERVICE_ROLE, grants, "service")
+
+
+def _grant_role_perms(role: str, grants: list[tuple[str, tuple[str, ...]]], label: str) -> None:
+    """Apply ``grants`` (``[(doctype, rights), …]``) to ``role``, each doctype **independently** (its own
+    commit): a failure on one (e.g. a doctype whose name differs on this bench) is logged and skipped, so
+    it can never roll back the grants that did succeed. Re-run ``bench execute pos.install.after_install``
+    after fixing any skipped one."""
     skipped = []
     for doctype, rights in grants:
         try:
-            _grant_role_perm(doctype, rights)
+            _grant_role_perm(role, doctype, rights)
             frappe.db.commit()
         except Exception:
             frappe.db.rollback()
             skipped.append(doctype)
-            frappe.log_error(frappe.get_traceback(), f"Self Checkout: cashier perm grant failed for {doctype}")
+            frappe.log_error(frappe.get_traceback(), f"Self Checkout: {label} perm grant failed for {doctype}")
     if skipped:
         frappe.log_error(
-            "Cashier permission grants skipped for: " + ", ".join(skipped) + ". The rest are committed; "
-            "fix these and re-run `bench execute pos.install.after_install`.",
+            f"{label.capitalize()} permission grants skipped for: " + ", ".join(skipped) + ". The rest are "
+            "committed; fix these and re-run `bench execute pos.install.after_install`.",
             "Self Checkout install incomplete",
         )
 
 
-def _grant_role_perm(doctype: str, rights: tuple[str, ...]) -> None:
-    """Additively grant the cashier role ``rights`` on ``doctype`` at permlevel 0.
+def _grant_role_perm(role: str, doctype: str, rights: tuple[str, ...]) -> None:
+    """Additively grant ``role`` the given ``rights`` on ``doctype`` at permlevel 0.
 
     Uses Frappe's permission API rather than a raw ``Custom DocPerm`` insert. ``add_permission`` copies
     the doctype's *standard* perms into Custom DocPerm the first time (preserving every existing role)
@@ -176,9 +205,9 @@ def _grant_role_perm(doctype: str, rights: tuple[str, ...]) -> None:
         return
     from frappe.permissions import add_permission, update_permission_property
 
-    add_permission(doctype, CASHIER_ROLE, 0)
+    add_permission(doctype, role, 0)
     for right in rights:
-        update_permission_property(doctype, CASHIER_ROLE, 0, right, "1")
+        update_permission_property(doctype, role, 0, right, "1")
 
 
 def _ensure_hitpay_mode_of_payment() -> None:
