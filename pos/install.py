@@ -41,6 +41,11 @@ CASHIER_WRITE_PERMS = {
     "POS Opening Entry": ("read", "write", "create", "submit"),
     "POS Closing Entry": ("read", "write", "create", "submit"),
     "Stock Entry": ("read", "write", "create", "submit"),  # End-of-Day consolidated Material Issue
+    # Closing the POS day consolidates the day's POS Invoices into a Sales Invoice via a POS Invoice
+    # Merge Log — submitting the POS Closing Entry (on_submit → consolidate_pos_invoices) creates+submits
+    # both under the cashier's own identity, so the self-contained role needs them too.
+    "POS Invoice Merge Log": ("read", "write", "create", "submit"),
+    "Sales Invoice": ("read", "write", "create", "submit"),
 }
 HITPAY_MODE_OF_PAYMENT = "HitPay"
 WALK_IN_CUSTOMER = "Walk-in Customer"
