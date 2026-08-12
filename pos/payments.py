@@ -36,11 +36,12 @@ def _base_url(env: str) -> str:
 # --------------------------------------------------------------------------------------------------
 # Outbound: create a payment request for a session
 # --------------------------------------------------------------------------------------------------
-def create_payment_request(session_name: str, method: str) -> dict:
+def create_payment_request(session_name: str, method: str, terminal_id: str = "") -> dict:
     """Create the HitPay payment request for a Pending session and return what the screen should show.
 
     Called by ``api.start_payment`` (whitelisted). Stores the returned request id on the session so the
-    webhook can correlate the result.
+    webhook can correlate the result. ``terminal_id`` is the device's HitPay Wi-Fi card-reader id (set per
+    kiosk on the app); for the card-present method the charge is routed to that reader.
     """
     doc = frappe.get_doc("Checkout Session", session_name)
     doc.check_permission("write")
@@ -70,8 +71,11 @@ def create_payment_request(session_name: str, method: str) -> dict:
     }
     if method in QR_METHODS:
         body["generate_qr"] = True
-    if method == TERMINAL_METHOD and settings.get("hitpay_terminal_id"):
-        body["wifi_terminal_id"] = settings.get("hitpay_terminal_id")
+    if method == TERMINAL_METHOD:
+        reader = (terminal_id or "").strip()
+        if not reader:
+            frappe.throw(_("No card terminal is configured on this till. Set the Card Terminal ID in the app before taking a card-present payment."))
+        body["wifi_terminal_id"] = reader
 
     resp = _hitpay_post(settings, api_key, "/v1/payment-requests", body)
 
@@ -83,11 +87,18 @@ def create_payment_request(session_name: str, method: str) -> dict:
     )
     frappe.db.commit()
 
+    # HitPay returns qr_code_data as an object {qr_code, qr_code_expiry} (qr_code = raw payload in prod, a
+    # URL in sandbox); older responses sent a bare string. Hand the device a plain payload string to render.
+    qr = resp.get("qr_code_data")
+    qr_payload = qr.get("qr_code") if isinstance(qr, dict) else qr
+    qr_expiry = qr.get("qr_code_expiry") if isinstance(qr, dict) else None
+
     return {
         "session": doc.name,
         "status": "pending",
         "hitpay_request_id": resp.get("id"),
-        "qr_code_data": resp.get("qr_code_data"),
+        "qr_code_data": qr_payload,
+        "qr_code_expiry": qr_expiry,
         "url": resp.get("url"),
         "terminal_wait": method == TERMINAL_METHOD,
     }

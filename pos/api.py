@@ -63,7 +63,8 @@ def get_app_context() -> dict:
         "stock_mode": settings.stock_mode,
         "bag_price": bag_price,
         "payment_methods": DEFAULT_HITPAY_METHODS,
-        "terminal_configured": True,
+        # The card-reader id is configured per-device on the app (each kiosk owns its reader) and passed to
+        # start_payment, so whether to offer card-present is a device-local decision — not reported here.
     }
 
 
@@ -299,12 +300,16 @@ def create_session(items_json, bag_qty: str = "0") -> dict:
 
 
 @frappe.whitelist(methods=["POST"])
-def start_payment(session: str, method: str) -> dict:
+def start_payment(session: str, method: str, terminal_id: str = "") -> dict:
     """Create the HitPay payment request for a session (server-side, key never on the device) and
-    return what the screen should show: a QR payload, a hosted URL, or a terminal-wait flag."""
+    return what the screen should show: a QR payload, a hosted URL, or a terminal-wait flag.
+
+    ``terminal_id`` is the device's own HitPay Wi-Fi card-reader id (configured per kiosk on the app);
+    for the card-present method it routes the charge to that reader.
+    """
     from pos import payments
 
-    return payments.create_payment_request(session, method)
+    return payments.create_payment_request(session, method, terminal_id=terminal_id)
 
 
 @frappe.whitelist()
