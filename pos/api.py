@@ -11,6 +11,8 @@ Surface: login context + shop gating (``get_app_context``), catalogue delta-sync
 
 from __future__ import annotations
 
+import base64
+
 import frappe
 from frappe import _
 from frappe.utils import flt, get_datetime
@@ -325,6 +327,44 @@ def session_status(session: str) -> dict:
         "pos_invoice": doc.pos_invoice,
         "grand_total": flt(doc.grand_total),
         "paid_on": str(doc.paid_on) if doc.paid_on else None,
+    }
+
+
+@frappe.whitelist()
+def get_receipt(session: str, fmt: str = "html") -> dict:
+    """Render the session's submitted POS Invoice as a receipt using an ERPNext Print Format.
+
+    ``fmt`` is ``html`` (default — for the in-app viewer) or ``pdf`` (base64, for printing). The layout is
+    the one configured on the POS Profile (``print_format``); falls back to ERPNext's standard POS Invoice
+    format when unset — the same format the built-in web POS uses.
+
+    Runs as the caller (the cashier) with native permission checks: read on the session and on the POS
+    Invoice (the self-contained Shop Cashier role holds both). No elevation, no ``ignore_permissions``.
+    """
+    doc = frappe.get_doc("Checkout Session", session)
+    doc.check_permission("read")
+    if not doc.pos_invoice:
+        frappe.throw(_("This checkout has no invoice yet."))
+    frappe.has_permission("POS Invoice", "read", doc.pos_invoice, throw=True)
+
+    print_format = frappe.db.get_value("POS Profile", doc.pos_profile, "print_format") or None
+
+    if (fmt or "html").lower() == "pdf":
+        pdf = frappe.get_print("POS Invoice", doc.pos_invoice, print_format=print_format, as_pdf=True)
+        return {
+            "session": doc.name,
+            "pos_invoice": doc.pos_invoice,
+            "format": "pdf",
+            "filename": f"{doc.pos_invoice}.pdf",
+            "content_base64": base64.b64encode(pdf).decode(),
+        }
+
+    html = frappe.get_print("POS Invoice", doc.pos_invoice, print_format=print_format)
+    return {
+        "session": doc.name,
+        "pos_invoice": doc.pos_invoice,
+        "format": "html",
+        "html": html,
     }
 
 
