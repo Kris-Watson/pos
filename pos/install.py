@@ -37,7 +37,11 @@ CASHIER_READ_DOCTYPES = (
     "POS Profile",
 )
 CASHIER_WRITE_PERMS = {
-    "POS Invoice": ("read", "write", "create"),            # draft only — the webhook submits
+    # create+write for the draft (the webhook service account also submits it on payment). submit is needed
+    # too because closing-day consolidation re-saves each already-submitted POS Invoice to stamp its
+    # consolidated Sales Invoice link (update_pos_invoices → doc.save on a docstatus-1 doc, which triggers a
+    # submit permission check) — and that runs under the cashier's identity.
+    "POS Invoice": ("read", "write", "create", "submit"),
     "POS Opening Entry": ("read", "write", "create", "submit"),
     "POS Closing Entry": ("read", "write", "create", "submit"),
     "Stock Entry": ("read", "write", "create", "submit"),  # End-of-Day consolidated Material Issue

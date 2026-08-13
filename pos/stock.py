@@ -15,12 +15,13 @@ clearing account). The **stock arm** is chosen by Checkout Settings ``stock_mode
 The two arms are directly comparable (N stock batches vs 1) — that comparison is the whole point of the
 toggle.
 
-Permission model (native, no silent bypass): the cashier does all of this under its own identity — the
+Permission model (native, no silent bypass): the cashier does most of this under its own identity — the
 self-contained **Shop Cashier** role carries the perms for each step. The cashier builds the **draft**
 invoice (``build_draft_invoice``) and opens/closes the POS day (``open_day``/``close_day``, incl. the EOD
-stock arm). The only elevation is the **submit** on the caller-less webhook, which runs as the service
-account (``finalize_paid_session``). The only retained ``ignore_permissions`` is the internal delete of an
-unpaid draft (the cashier role has create but not delete on POS Invoice).
+stock arm and the POS Closing Entry, whose ``on_submit`` consolidates the day's POS Invoices into Sales
+Invoices under the cashier's own identity). The only elevation is the **submit** on the caller-less webhook,
+which runs as the service account (``finalize_paid_session``). The only retained ``ignore_permissions`` is
+the internal delete of an unpaid draft (the cashier role has create but not delete on POS Invoice).
 
 NOTE (verify on the v16 bench): POS Invoice submission may require an open POS Opening Entry, and the
 exact POS Closing Entry helper name. Both are handled defensively below and flagged for confirmation.
@@ -283,8 +284,11 @@ def _post_consolidated_stock(profile) -> tuple[str | None, int]:
 
 
 def _make_closing_entry(profile) -> str | None:
-    """Consolidate the open POS session into a POS Closing Entry. Uses ERPNext's helper to prefill from
-    the opening entry; flagged for on-bench verification of the exact signature in v16."""
+    """Consolidate the open POS session into a POS Closing Entry, run entirely as the **cashier** — the
+    Shop Cashier role holds create+submit on POS Closing Entry, and its ``on_submit`` consolidates the day's
+    POS Invoices into Sales Invoices (a POS Invoice Merge Log per customer) under the cashier's own identity.
+    Uses ERPNext's helper to prefill from the opening entry.
+    """
     opening = frappe.db.get_value(
         "POS Opening Entry",
         {"pos_profile": profile.name, "user": frappe.session.user, "status": "Open", "docstatus": 1},
@@ -303,7 +307,8 @@ def _make_closing_entry(profile) -> str | None:
         closing.submit()
         return closing.name
     except Exception:
-        # Don't fail the whole close (esp. the stock posting) if the consolidation helper differs on
-        # this bench — surface it for the operator to complete/verify.
+        # Don't fail the whole close (esp. the already-committed stock posting) if consolidation errors.
+        # Roll back the half-created closing entry so it doesn't linger as a stale draft, and surface it.
+        frappe.db.rollback()
         frappe.log_error(frappe.get_traceback(), "POS Closing Entry consolidation failed")
         return None
