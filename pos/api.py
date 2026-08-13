@@ -492,3 +492,23 @@ def close_day(pos_profile: str | None = None) -> dict:
     from pos import stock
 
     return stock.close_day(pos_profile)
+
+
+@frappe.whitelist()
+def day_status(pos_profile: str | None = None) -> dict:
+    """Is the POS day open for the **current cashier** (per-user)? Read-only status the app checks on
+    login and reflects in the till (open/closed + the opening entry id). Per-user, so it's open only if
+    this cashier has a submitted, Open POS Opening Entry for the shop's profile — not merely that someone
+    else opened the day.
+    """
+    profile = frappe.get_doc("POS Profile", pos_profile) if pos_profile else resolve_pos_profile()
+    opening = frappe.db.get_value(
+        "POS Opening Entry",
+        {"pos_profile": profile.name, "user": frappe.session.user, "status": "Open", "docstatus": 1},
+        "name",
+    )
+    return {
+        "pos_profile": profile.name,
+        "open": bool(opening),
+        "pos_opening_entry": opening or None,
+    }
